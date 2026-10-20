@@ -24,7 +24,7 @@ const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
     folder: 'pharmacy_medicines',
-    allowedFormats: ['jpg', 'png', 'jpeg'],
+    allowedFormats: ['jpg', 'png', 'jpeg', 'pdf'],
   },
 });
 
@@ -38,7 +38,17 @@ mongoose.connect(DB_LINK).then(() => console.log("Database Connected.")).catch((
 const medicineSchema = new mongoose.Schema({ name: String, formula: String, price: Number, stock: Number, expiryDate: String, imageUrl: String });
 const Medicine = mongoose.model('Medicine', medicineSchema);
 
-const orderSchema = new mongoose.Schema({ customerName: String, phone: String, address: String, items: Array, totalBill: Number, paymentMethod: String, status: { type: String, default: 'Pending' } });
+// NAYA: Order Schema mein prescriptionUrl ka izafa kiya gaya hai
+const orderSchema = new mongoose.Schema({ 
+    customerName: String, 
+    phone: String, 
+    address: String, 
+    items: Array, 
+    totalBill: Number, 
+    paymentMethod: String, 
+    prescriptionUrl: String, 
+    status: { type: String, default: 'Pending' } 
+});
 const Order = mongoose.model('Order', orderSchema);
 
 app.post('/api/admin/login', (req, res) => {
@@ -50,12 +60,7 @@ app.post('/api/admin/login', (req, res) => {
 app.post('/api/medicines', upload.single('image'), async (req, res) => {
     try {
         let imageUrl = req.body.imageUrl || "";
-        
-        // Agar picture direct upload hui hai, toh Cloudinary ka link set ho jayega
-        if (req.file) {
-            imageUrl = req.file.path; 
-        }
-        
+        if (req.file) imageUrl = req.file.path; 
         const dawai = new Medicine({ ...req.body, imageUrl }); 
         await dawai.save(); 
         res.status(201).json(dawai); 
@@ -70,31 +75,52 @@ app.delete('/api/medicines/:id', async (req, res) => {
     try { await Medicine.findByIdAndDelete(req.params.id); res.status(200).json({ message: "Deleted" }); } catch (e) { res.status(400).json({ error: "Error" }); }
 });
 
-// YEH WALA HISSA MISSING THA - Dawai Edit/Update karna (Picture ke sath)
+// Dawai Edit/Update karna (Picture ke sath)
 app.put('/api/medicines/:id', upload.single('image'), async (req, res) => {
     try {
         let updateData = { ...req.body };
-        // Agar nayi picture upload ki gayi hai toh Cloudinary ka link add karein
-        if (req.file) {
-            updateData.imageUrl = req.file.path; 
-        }
+        if (req.file) updateData.imageUrl = req.file.path; 
         const updatedMedicine = await Medicine.findByIdAndUpdate(req.params.id, updateData, { new: true });
         res.status(200).json(updatedMedicine);
+    } catch (e) { res.status(400).json({ error: "Error updating medicine" }); }
+});
+
+
+// NAYA HISSA: Orders save karna aur Prescription Picture read karna
+app.post('/api/orders', upload.any(), async (req, res) => {
+    try {
+        let orderData = { ...req.body };
+        
+        // Agar items string form mein aaye hain toh unhein Array mein badlo
+        if (typeof orderData.items === 'string') {
+            orderData.items = JSON.parse(orderData.items);
+        }
+        
+        // Agar customer ne doctor ki prescription bheji hai toh Cloudinary link add karo
+        if (req.files && req.files.length > 0) {
+            orderData.prescriptionUrl = req.files[0].path;
+        }
+
+        const order = new Order(orderData); 
+        await order.save();
+        
+        // Order place hone par dawai ka stock kam karna
+        if (orderData.items && Array.isArray(orderData.items)) {
+            for (let item of orderData.items) {
+                const dawai = await Medicine.findById(item._id || item.id);
+                if (dawai) { 
+                    dawai.stock -= (item.cartQuantity || 1); 
+                    await dawai.save(); 
+                }
+            }
+        }
+        res.status(201).json({ message: "Success" });
     } catch (e) { 
-        res.status(400).json({ error: "Error updating medicine" }); 
+        console.log(e);
+        res.status(400).json({ error: "Error placing order" }); 
     }
 });
 
-app.post('/api/orders', async (req, res) => {
-    try {
-        const order = new Order(req.body); await order.save();
-        for (let item of req.body.items) {
-            const dawai = await Medicine.findById(item._id);
-            if (dawai) { dawai.stock -= item.cartQuantity; await dawai.save(); }
-        }
-        res.status(201).json({ message: "Success" });
-    } catch (e) { res.status(400).json({ error: "Error" }); }
-});
 
 app.get('/api/orders', async (req, res) => {
     try { res.status(200).json(await Order.find().sort({ _id: -1 })); } catch (e) { res.status(400).json({ error: "Error" }); }
